@@ -5,7 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from honeyfile import build_parser, compare, default_state, inspect, main, snapshot
+from honeyfile import build_parser, compare, default_state, inspect, main, snapshot, write_state
 
 
 class HoneyfileTests(unittest.TestCase):
@@ -53,21 +53,45 @@ class HoneyfileTests(unittest.TestCase):
             target = Path(directory) / "canary.txt"
             with redirect_stdout(io.StringIO()):
                 main(["create", str(target)])
-            real_inspect = inspect
-            results = iter([None, PermissionError("locked"), None])
+            real_snapshot = snapshot
+            results = iter([PermissionError("locked")])
 
-            def flaky_inspect(*args):
-                result = next(results)
-                if isinstance(result, Exception):
-                    raise result
-                return real_inspect(*args)
+            def flaky_snapshot(path):
+                error = next(results, None)
+                if error:
+                    raise error
+                return real_snapshot(path)
 
             target.write_text("changed", encoding="utf-8")
             stdout, stderr = io.StringIO(), io.StringIO()
             sleeps = mock.Mock(side_effect=[None, KeyboardInterrupt])
-            with mock.patch("honeyfile.inspect", flaky_inspect), mock.patch("honeyfile.time.sleep", sleeps), redirect_stdout(stdout), redirect_stderr(stderr):
+            with mock.patch("honeyfile.snapshot", flaky_snapshot), mock.patch("honeyfile.time.sleep", sleeps), redirect_stdout(stdout), redirect_stderr(stderr):
                 self.assertEqual(main(["watch", str(target), "--interval", "0"]), 0)
             self.assertIn("Cannot inspect canary: locked", stderr.getvalue())
+            self.assertIn("content_changed", stdout.getvalue())
+
+    def test_watch_ignores_state_rewritten_after_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "canary.txt"
+            with redirect_stdout(io.StringIO()):
+                main(["create", str(target)])
+
+            def tamper():
+                target.write_text("changed", encoding="utf-8")
+                write_state(default_state(target), target)  # hide the change from re-reads
+
+            calls = []
+
+            def fake_sleep(_interval):
+                calls.append(None)
+                if len(calls) == 1:
+                    tamper()
+                else:
+                    raise KeyboardInterrupt
+
+            stdout = io.StringIO()
+            with mock.patch("honeyfile.time.sleep", fake_sleep), redirect_stdout(stdout):
+                self.assertEqual(main(["watch", str(target), "--interval", "0"]), 0)
             self.assertIn("content_changed", stdout.getvalue())
 
 
