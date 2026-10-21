@@ -1,8 +1,11 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from honeyfile import compare, default_state, inspect, main
+from honeyfile import compare, default_state, inspect, main, snapshot
 
 
 class HoneyfileTests(unittest.TestCase):
@@ -18,6 +21,44 @@ class HoneyfileTests(unittest.TestCase):
             self.assertEqual(inspect(target, default_state(target))[0], [])
             target.write_text("changed", encoding="utf-8")
             self.assertIn("content_changed", inspect(target, default_state(target))[0])
+
+    def test_snapshot_treats_mid_read_deletion_as_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "canary.txt"
+            target.write_text("canary", encoding="utf-8")
+            with mock.patch("honeyfile.hash_file", side_effect=FileNotFoundError):
+                self.assertEqual(snapshot(target), {"exists": False})
+
+    def test_watch_rejects_missing_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "canary.txt"
+            target.write_text("canary", encoding="utf-8")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["watch", str(target)]), 2)
+            self.assertIn("Cannot read canary state", stderr.getvalue())
+
+    def test_watch_keeps_running_after_read_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "canary.txt"
+            with redirect_stdout(io.StringIO()):
+                main(["create", str(target)])
+            real_inspect = inspect
+            results = iter([None, PermissionError("locked"), None])
+
+            def flaky_inspect(*args):
+                result = next(results)
+                if isinstance(result, Exception):
+                    raise result
+                return real_inspect(*args)
+
+            target.write_text("changed", encoding="utf-8")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            sleeps = mock.Mock(side_effect=[None, KeyboardInterrupt])
+            with mock.patch("honeyfile.inspect", flaky_inspect), mock.patch("honeyfile.time.sleep", sleeps), redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(main(["watch", str(target), "--interval", "0"]), 0)
+            self.assertIn("Cannot inspect canary: locked", stderr.getvalue())
+            self.assertIn("content_changed", stdout.getvalue())
 
 
 if __name__ == "__main__":
