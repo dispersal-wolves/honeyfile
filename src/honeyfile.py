@@ -23,12 +23,14 @@ def hash_file(path: Path) -> str:
 
 
 def snapshot(path: Path) -> dict[str, object]:
-    if not path.exists():
+    try:
+        info = path.stat()
+        digest = hash_file(path)
+    except FileNotFoundError:  # deleted before or while it was read
         return {"exists": False}
-    info = path.stat()
     return {
         "exists": True,
-        "sha256": hash_file(path),
+        "sha256": digest,
         "size": info.st_size,
         "mtime_ns": info.st_mtime_ns,
         "file_id": f"{info.st_dev}:{info.st_ino}",
@@ -118,11 +120,25 @@ def command_status(args: argparse.Namespace) -> int:
 
 def command_watch(args: argparse.Namespace) -> int:
     state_path = args.state or default_state(args.target)
+    try:
+        inspect(args.target, state_path)
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        print(f"Cannot read canary state: {exc}", file=sys.stderr)
+        return 2
     last_events: tuple[str, ...] = ()
+    last_error = ""
     print(f"Watching {args.target}; press Ctrl+C to stop.")
     try:
         while True:
-            events, actual = inspect(args.target, state_path)
+            try:
+                events, actual = inspect(args.target, state_path)
+            except (OSError, json.JSONDecodeError, KeyError) as exc:  # a read failure must not stop monitoring
+                if str(exc) != last_error:
+                    print(f"Cannot inspect canary: {exc}", file=sys.stderr, flush=True)
+                last_error = str(exc)
+                time.sleep(args.interval)
+                continue
+            last_error = ""
             signature = tuple(events)
             if events and signature != last_events:
                 event = {
