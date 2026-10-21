@@ -5,7 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from honeyfile import compare, default_state, inspect, main, snapshot
+from honeyfile import build_parser, compare, default_state, inspect, main, snapshot
 
 
 class HoneyfileTests(unittest.TestCase):
@@ -21,6 +21,16 @@ class HoneyfileTests(unittest.TestCase):
             self.assertEqual(inspect(target, default_state(target))[0], [])
             target.write_text("changed", encoding="utf-8")
             self.assertIn("content_changed", inspect(target, default_state(target))[0])
+
+    def test_every_command_and_option_has_help(self):
+        parser = build_parser()
+        commands = next(action for action in parser._actions if action.dest == "command")
+        for choice in commands._choices_actions:
+            self.assertTrue(choice.help, choice.dest)
+        for name, subparser in commands.choices.items():
+            for action in subparser._actions:
+                if action.dest != "help":
+                    self.assertTrue(action.help, f"{name} {action.dest}")
 
     def test_snapshot_treats_mid_read_deletion_as_missing(self):
         with tempfile.TemporaryDirectory() as directory:
