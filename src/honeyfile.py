@@ -118,11 +118,15 @@ def command_status(args: argparse.Namespace) -> int:
 
 def command_watch(args: argparse.Namespace) -> int:
     state_path = args.state or default_state(args.target)
+    # Read the baseline once: re-reading it every poll would let anyone who
+    # rewrites the canary and its state file together go unnoticed.
+    expected = read_state(state_path)["expected"]
     last_events: tuple[str, ...] = ()
     print(f"Watching {args.target}; press Ctrl+C to stop.")
     try:
         while True:
-            events, actual = inspect(args.target, state_path)
+            actual = snapshot(args.target)
+            events = compare(expected, actual)
             signature = tuple(events)
             if events and signature != last_events:
                 event = {

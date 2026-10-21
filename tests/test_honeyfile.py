@@ -1,8 +1,11 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from honeyfile import compare, default_state, inspect, main
+from honeyfile import compare, default_state, inspect, main, write_state
 
 
 class HoneyfileTests(unittest.TestCase):
@@ -18,6 +21,30 @@ class HoneyfileTests(unittest.TestCase):
             self.assertEqual(inspect(target, default_state(target))[0], [])
             target.write_text("changed", encoding="utf-8")
             self.assertIn("content_changed", inspect(target, default_state(target))[0])
+
+    def test_watch_ignores_state_rewritten_after_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "canary.txt"
+            with redirect_stdout(io.StringIO()):
+                main(["create", str(target)])
+
+            def tamper():
+                target.write_text("changed", encoding="utf-8")
+                write_state(default_state(target), target)  # hide the change from re-reads
+
+            calls = []
+
+            def fake_sleep(_interval):
+                calls.append(None)
+                if len(calls) == 1:
+                    tamper()
+                else:
+                    raise KeyboardInterrupt
+
+            stdout = io.StringIO()
+            with mock.patch("honeyfile.time.sleep", fake_sleep), redirect_stdout(stdout):
+                self.assertEqual(main(["watch", str(target), "--interval", "0"]), 0)
+            self.assertIn("content_changed", stdout.getvalue())
 
 
 if __name__ == "__main__":
